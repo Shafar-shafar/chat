@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🔐 КриптоЧат · WebSocket + AES</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: linear-gradient(135deg, #0b0e16 0%, #1a1f2c 100%);
+            font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+            padding: 16px;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .chat-container {
+            max-width: 700px;
+            width: 100%;
+            height: 90vh;
+            background: rgba(18, 22, 32, 0.95);
+            border-radius: 28px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .header {
+            background: #0c0f18;
+            padding: 16px 20px;
+            border-bottom: 1px solid #2a2f3e;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+        .logo {
+            font-weight: 700;
+            background: linear-gradient(135deg, #89f7fe, #66a6ff);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+        }
+        .status {
+            font-size: 0.75rem;
+            padding: 4px 10px;
+            border-radius: 20px;
+            background: #1e2a2a;
+            color: #7ef0ba;
+            font-family: monospace;
+        }
+        .username-set {
+            display: flex;
+            gap: 8px;
+            background: #1a1f2c;
+            padding: 5px 12px;
+            border-radius: 60px;
+        }
+        #usernameInput {
+            background: transparent;
+            border: none;
+            color: white;
+            outline: none;
+            width: 120px;
+        }
+        .set-btn {
+            background: #2c3248;
+            border: none;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 40px;
+            cursor: pointer;
+        }
+        .messages-area {
+            flex: 1;
+            overflow-y: auto;
+            padding: 18px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .message {
+            max-width: 85%;
+            display: flex;
+            flex-direction: column;
+            animation: fadeIn 0.2s ease;
+        }
+        .message.own { align-self: flex-end; }
+        .message.other { align-self: flex-start; }
+        .bubble {
+            padding: 10px 14px;
+            border-radius: 22px;
+            word-wrap: break-word;
+        }
+        .own .bubble {
+            background: linear-gradient(135deg, #2a73b0, #1e5a8a);
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+        .other .bubble {
+            background: #262c3b;
+            color: #eef2ff;
+            border-bottom-left-radius: 4px;
+        }
+        .system-message {
+            text-align: center;
+            font-size: 0.75rem;
+            color: #8d95b5;
+            margin: 8px 0;
+        }
+        .meta {
+            font-size: 0.65rem;
+            margin-top: 4px;
+            padding: 0 6px;
+            color: #939bb5;
+            display: flex;
+            gap: 12px;
+        }
+        .input-area {
+            background: #0c0f18;
+            padding: 14px 16px;
+            border-top: 1px solid #2a2f3e;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        #messageInput {
+            flex: 1;
+            background: #1a1f2c;
+            border: none;
+            padding: 12px 16px;
+            border-radius: 32px;
+            color: white;
+            outline: none;
+        }
+        button {
+            background: #2c3e66;
+            border: none;
+            color: white;
+            padding: 10px 18px;
+            border-radius: 40px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        .record-btn {
+            background: #a03e4b;
+        }
+        .record-btn.recording {
+            background: #c74f5e;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 0.8; }
+            50% { opacity: 1; background: #e05a6b; }
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(6px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        audio { height: 32px; border-radius: 40px; }
+    </style>
+</head>
+<body>
+<div class="chat-container">
+    <div class="header">
+        <div class="logo">🔐 КриптоЧат · WebSocket</div>
+        <div class="status" id="connectionStatus">⚡ Соединение...</div>
+        <div class="username-set">
+            <input type="text" id="usernameInput" placeholder="Имя" maxlength="20">
+            <button class="set-btn" id="setUsernameBtn">Войти</button>
+        </div>
+    </div>
+    <div class="messages-area" id="messagesArea">
+        <div class="system-message">✨ Введите имя и начните защищённый диалог</div>
+    </div>
+    <div class="input-area">
+        <input type="text" id="messageInput" placeholder="Сообщение (AES-256 шифрование)...">
+        <button id="sendBtn">📤 Отправить</button>
+        <button id="audioBtn" class="record-btn">🎤 Голос</button>
+    </div>
+</div>
+
+<script>
+    // ========== КРИПТОГРАФИЯ (AES-GCM) ==========
+    let encryptionKey = null;
+    
+    async function initCrypto() {
+        encryptionKey = await crypto.subtle.generateKey(
+            { name: "AES-GCM", length: 256 },
+            false,
+            ["encrypt", "decrypt"]
+        );
+    }
+    
+    async function encryptText(plain) {
+        const iv = crypto.getRandomValues(new Uint8Array(12));
+        const encrypted = await crypto.subtle.encrypt(
+            { name: "AES-GCM", iv: iv },
+            encryptionKey,
+            new TextEncoder().encode(plain)
+        );
+        return `${btoa(String.fromCharCode(...iv))}::${btoa(String.fromCharCode(...new Uint8Array(encrypted)))}`;
+    }
+    
+    async function decryptText(payload) {
+        try {
+            const [ivB64, cipherB64] = payload.split("::");
+            const iv = Uint8Array.from(atob(ivB64), c => c.charCodeAt(0));
+            const cipher = Uint8Array.from(atob(cipherB64), c => c.charCodeAt(0));
+            const decrypted = await crypto.subtle.decrypt(
+                { name: "AES-GCM", iv: iv },
+                encryptionKey,
+                cipher
+            );
+            return new TextDecoder().decode(decrypted);
+        } catch(e) { return "🔒 [ошибка расшифровки]"; }
+    }
+    
+    async function encryptAudioBlob(blob) {
+        const iv = crypto.getRandomValues(new Uint8Array(12));
+        const buffer = await blob.arrayBuffer();
+        const encrypted = await crypto.subtle.encrypt(
+            { name: "AES-GCM", iv: iv },
+            encryptionKey,
+            buffer
+        );
+        return `${btoa(String.fromCharCode(...iv))}::${btoa(String.fromCharCode(...new Uint8Array(encrypted)))}`;
+    }
+    
+    async function decryptAudio(encryptedPayload, mimeType) {
+        const [ivB64, cipherB64] = encryptedPayload.split("::");
+        const iv = Uint8Array.from(atob(ivB64), c => c.charCodeAt(0));
+        const cipher = Uint8Array.from(atob(cipherB64), c => c.charCodeAt(0));
+        const decrypted = await crypto.subtle.decrypt(
+            { name: "AES-GCM", iv: iv },
+            encryptionKey,
+            cipher
+        );
+        return URL.createObjectURL(new Blob([decrypted], { type: mimeType }));
+    }
+    
+    // ========== WEBSOCKET КЛИЕНТ ==========
+    let ws = null;
+    let currentUsername = localStorage.getItem("chat_username") || "";
+    let registered = false;
+    const messagesArea = document.getElementById("messagesArea");
+    const statusDiv = document.getElementById("connectionStatus");
+    
+    function connectWebSocket() {
+        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const wsUrl = `${protocol}//${window.location.host}`;
+        ws = new WebSocket(wsUrl);
+        
+        ws.onopen = () => {
+            statusDiv.innerHTML = "🟢 Онлайн";
+            statusDiv.style.color = "#7ef0ba";
+            if (currentUsername && !registered) {
+                registerUser(currentUsername);
+            }
+        };
+        
+        ws.onclose = () => {
+            statusDiv.innerHTML = "🔴 Офлайн · переподключение...";
+            statusDiv.style.color = "#ff8a7a";
+            setTimeout(connectWebSocket, 3000);
+        };
+        
+        ws.onerror = () => {
+            statusDiv.innerHTML = "⚠️ Ошибка соединения";
+        };
+        
+        ws.onmessage = async (event) => {
+            const data = JSON.parse(event.data);
+            
+            if (data.type === 'registered') {
+                registered = true;
+                localStorage.setItem("chat_username", currentUsername);
+                addSystemMessage(`✅ Вы вошли как ${currentUsername}`);
+            }
+            else if (data.type === 'system') {
+                addSystemMessage(data.text);
+            }
+            else if (data.type === 'message') {
+                let content = "";
+                let audioSrc = null;
+                
+                if (data.type === 'message' && data.encryptedBody) {
+                    const decrypted = await decryptText(data.encryptedBody);
+                    content = decrypted;
+                    addMessage(data.senderName, content, false, data.timestamp);
+                }
+                else if (data.type === 'message' && data.encryptedAudioData) {
+                    audioSrc = await decryptAudio(data.encryptedAudioData, data.mimeType);
+                    addAudioMessage(data.senderName, audioSrc, false, data.timestamp);
+                }
+            }
+            else if (data.type === 'error') {
+                addSystemMessage(`⚠️ ${data.text}`);
+            }
+        };
+    }
+    
+    function registerUser(username) {
+        if (!username.trim()) return;
+        ws.send(JSON.stringify({
+            type: 'register',
+            username: username.trim()
+        }));
+    }
+    
+    async function sendTextMessage(text) {
+        if (!registered || !ws || ws.readyState !== WebSocket.OPEN) {
+            addSystemMessage("❌ Нет соединения с сервером");
+            return;
+        }
+        const encrypted = await encryptText(text);
+        ws.send(JSON.stringify({
+            type: 'message',
+            messageType: 'text',
+            encryptedBody: encrypted,
+            timestamp: Date.now()
+        }));
+        // Показываем у себя
+        addMessage(currentUsername, text, true, Date.now());
+    }
+    
+    async function sendAudioMessage(blob, mimeType) {
+        const encryptedAudio = await encryptAudioBlob(blob);
+        ws.send(JSON.stringify({
+            type: 'message',
+            messageType: 'audio',
+            encryptedAudioData: encryptedAudio,
+            mimeType: mimeType,
+            timestamp: Date.now()
+        }));
+        addAudioMessage(currentUsername, URL.createObjectURL(blob), true, Date.now());
+    }
+    
+    // UI функции
+    function addMessage(sender, text, isOwn, timestamp) {
+        const div = document.createElement('div');
+        div.className = `message ${isOwn ? 'own' : 'other'}`;
+        div.innerHTML = `
+            <div class="bubble"><span>${escapeHtml(text)}</span></div>
+            <div class="meta"><span class="sender">${escapeHtml(sender)}</span><span>${new Date(timestamp).toLocaleTimeString()}</span></div>
+        `;
+        messagesArea.appendChild(div);
+        messagesArea.scrollTop = messagesArea.scrollHeight;
+    }
+    
+    function addAudioMessage(sender, audioUrl, isOwn, timestamp) {
+        const div = document.createElement('div');
+        div.className = `message ${isOwn ? 'own' : 'other'}`;
+        div.innerHTML = `
+            <div class="bubble">
+                <div style="display: flex; gap: 8px; align-items: center;">
+                    <span>🎙️ Голосовое</span>
+                    <audio controls src="${audioUrl}" preload="metadata"></audio>
+                </div>
+            </div>
+            <div class="meta"><span>${escapeHtml(sender)}</span><span>${new Date(timestamp).toLocaleTimeString()}</span></div>
+        `;
+        messagesArea.appendChild(div);
+        messagesArea.scrollTop = messagesArea.scrollHeight;
+    }
+    
+    function addSystemMessage(text) {
+        const div = document.createElement('div');
+        div.className = 'system-message';
+        div.innerText = text;
+        messagesArea.appendChild(div);
+        messagesArea.scrollTop = messagesArea.scrollHeight;
+    }
+    
+    function escapeHtml(str) {
+        return str.replace(/[&<>]/g, function(m) {
+            if (m === '&') return '&amp;';
+            if (m === '<') return '&lt;';
+            if (m === '>') return '&gt;';
+            return m;
+        });
+    }
+    
+    // Аудио запись
+    let mediaRecorder = null;
+    let audioChunks = [];
+    let isRecording = false;
+    const audioBtn = document.getElementById("audioBtn");
+    
+    async function startRecording() {
+        audioChunks = [];
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mediaRecorder = new MediaRecorder(stream);
+            mediaRecorder.ondataavailable = (e) => { if (e.data.size) audioChunks.push(e.data); };
+            mediaRecorder.onstop = async () => {
+                stream.getTracks().forEach(t => t.stop());
+                const blob = new Blob(audioChunks, { type: 'audio/webm' });
+                if (blob.size > 0) await sendAudioMessage(blob, 'audio/webm');
+                audioBtn.classList.remove("recording");
+                audioBtn.innerText = "🎤 Голос";
+                isRecording = false;
+            };
+            mediaRecorder.start();
+            isRecording = true;
+            audioBtn.classList.add("recording");
+            audioBtn.innerText = "⏹️ Стоп";
+        } catch(err) {
+            addSystemMessage("❌ Нет доступа к микрофону");
+        }
+    }
+    
+    function stopRecording() {
+        if (mediaRecorder && mediaRecorder.state === "recording") {
+            mediaRecorder.stop();
+        }
+    }
+    
+    audioBtn.addEventListener("click", () => {
+        if (isRecording) stopRecording();
+        else startRecording();
+    });
+    
+    // Отправка текста
+    document.getElementById("sendBtn").addEventListener("click", async () => {
+        const input = document.getElementById("messageInput");
+        const text = input.value.trim();
+        if (text) {
+            await sendTextMessage(text);
+            input.value = "";
+        }
+    });
+    
+    document.getElementById("messageInput").addEventListener("keypress", (e) => {
+        if (e.key === "Enter") document.getElementById("sendBtn").click();
+    });
+    
+    document.getElementById("setUsernameBtn").addEventListener("click", () => {
+        const newName = document.getElementById("usernameInput").value.trim();
+        if (newName) {
+            currentUsername = newName;
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                registerUser(currentUsername);
+            } else {
+                addSystemMessage("⚠️ Подключение к серверу... имя будет применено при входе");
+                connectWebSocket();
+            }
+        }
+    });
+    
+    // Запуск
+    initCrypto().then(() => {
+        if (currentUsername) {
+            document.getElementById("usernameInput").value = currentUsername;
+        }
+        connectWebSocket();
+    });
+</script>
+</body>
+</html>
